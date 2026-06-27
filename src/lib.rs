@@ -62,13 +62,21 @@ pub fn init(service_name: &str) {
                     tracing::info!(service = service_name, "telemetry: OTLP export enabled");
                 }
                 Err(e) => {
-                    tracing_subscriber::registry().with(filter).with(fmt_layer).init();
-                    tracing::error!("telemetry: OTLP exporter init failed ({e}); using stdout only");
+                    tracing_subscriber::registry()
+                        .with(filter)
+                        .with(fmt_layer)
+                        .init();
+                    tracing::error!(
+                        "telemetry: OTLP exporter init failed ({e}); using stdout only"
+                    );
                 }
             }
         }
         _ => {
-            tracing_subscriber::registry().with(filter).with(fmt_layer).init();
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt_layer)
+                .init();
         }
     }
 }
