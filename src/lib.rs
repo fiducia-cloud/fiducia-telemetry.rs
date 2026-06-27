@@ -37,30 +37,35 @@ pub fn init(service_name: &str) {
 
     match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         Ok(endpoint) if !endpoint.is_empty() => {
-            let exporter = opentelemetry_otlp::SpanExporter::builder()
+            // A misconfigured endpoint must NOT crash the service: on any
+            // exporter build failure, fall back to stdout logging and carry on.
+            match opentelemetry_otlp::SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(endpoint)
                 .build()
-                .expect("build OTLP span exporter");
-
-            let provider = TracerProvider::builder()
-                .with_batch_exporter(exporter, runtime::Tokio)
-                .with_resource(Resource::new(vec![KeyValue::new(
-                    "service.name",
-                    service_name.to_string(),
-                )]))
-                .build();
-
-            let tracer = provider.tracer("fiducia");
-            opentelemetry::global::set_tracer_provider(provider);
-
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt_layer)
-                .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                .init();
-
-            tracing::info!(service = service_name, "telemetry: OTLP export enabled");
+            {
+                Ok(exporter) => {
+                    let provider = TracerProvider::builder()
+                        .with_batch_exporter(exporter, runtime::Tokio)
+                        .with_resource(Resource::new(vec![KeyValue::new(
+                            "service.name",
+                            service_name.to_string(),
+                        )]))
+                        .build();
+                    let tracer = provider.tracer("fiducia");
+                    opentelemetry::global::set_tracer_provider(provider);
+                    tracing_subscriber::registry()
+                        .with(filter)
+                        .with(fmt_layer)
+                        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                        .init();
+                    tracing::info!(service = service_name, "telemetry: OTLP export enabled");
+                }
+                Err(e) => {
+                    tracing_subscriber::registry().with(filter).with(fmt_layer).init();
+                    tracing::error!("telemetry: OTLP exporter init failed ({e}); using stdout only");
+                }
+            }
         }
         _ => {
             tracing_subscriber::registry().with(filter).with(fmt_layer).init();
