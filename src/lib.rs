@@ -90,7 +90,7 @@ pub fn shutdown() {
     opentelemetry::global::shutdown_tracer_provider();
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LogFormat {
     Json,
     Text,
@@ -98,12 +98,15 @@ enum LogFormat {
 
 impl LogFormat {
     fn from_env() -> Self {
-        match std::env::var("FIDUCIA_LOG_FORMAT")
-            .or_else(|_| std::env::var("OTEL_LOG_FORMAT"))
-            .unwrap_or_else(|_| "json".to_string())
-            .to_ascii_lowercase()
-            .as_str()
-        {
+        Self::from_value(
+            &std::env::var("FIDUCIA_LOG_FORMAT")
+                .or_else(|_| std::env::var("OTEL_LOG_FORMAT"))
+                .unwrap_or_else(|_| "json".to_string()),
+        )
+    }
+
+    fn from_value(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
             "text" | "plain" | "pretty" | "compact" => Self::Text,
             _ => Self::Json,
         }
@@ -230,16 +233,24 @@ fn push_otel_resource_attributes(attrs: &mut Vec<KeyValue>) {
         return;
     };
 
-    for pair in raw.split(',') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-        if !key.is_empty() && !value.is_empty() {
-            attrs.push(KeyValue::new(key.to_string(), value.to_string()));
-        }
+    for (key, value) in otel_resource_attribute_pairs(&raw) {
+        attrs.push(KeyValue::new(key, value));
     }
+}
+
+fn otel_resource_attribute_pairs(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            let key = key.trim();
+            let value = value.trim();
+            if !key.is_empty() && !value.is_empty() {
+                Some((key.to_string(), value.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -260,5 +271,44 @@ mod interface_contract_tests {
             ProposeErrorReason::NotLeader,
             ProposeErrorReason::NotLeader
         ));
+    }
+
+    #[test]
+    fn log_format_accepts_human_text_aliases() {
+        assert_eq!(super::LogFormat::from_value("text"), super::LogFormat::Text);
+        assert_eq!(
+            super::LogFormat::from_value(" plain "),
+            super::LogFormat::Text
+        );
+        assert_eq!(
+            super::LogFormat::from_value("PRETTY"),
+            super::LogFormat::Text
+        );
+        assert_eq!(
+            super::LogFormat::from_value("compact"),
+            super::LogFormat::Text
+        );
+    }
+
+    #[test]
+    fn log_format_defaults_unknown_values_to_json() {
+        assert_eq!(super::LogFormat::from_value(""), super::LogFormat::Json);
+        assert_eq!(super::LogFormat::from_value("json"), super::LogFormat::Json);
+        assert_eq!(super::LogFormat::from_value("yaml"), super::LogFormat::Json);
+    }
+
+    #[test]
+    fn otel_resource_attribute_parser_trims_and_drops_invalid_pairs() {
+        let attrs = super::otel_resource_attribute_pairs(
+            "service.version=1.2.3, missing-value=, =missing-key, cloud.region = us-east-1 ,bad",
+        );
+
+        assert_eq!(
+            attrs,
+            vec![
+                ("service.version".to_string(), "1.2.3".to_string()),
+                ("cloud.region".to_string(), "us-east-1".to_string()),
+            ]
+        );
     }
 }
