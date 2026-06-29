@@ -14,28 +14,35 @@ async fn main() {
 
 ## What `init` does
 
-- **Always:** a `tracing` `fmt` layer to stdout, filtered by `RUST_LOG` /
-  `EnvFilter` (default `info`).
+- **Always:** JSON structured logs to stdout, filtered by `RUST_LOG` /
+  `EnvFilter` (default `info`). Set `FIDUCIA_LOG_FORMAT=text` for local
+  terminal-friendly logs.
 - **When `OTEL_EXPORTER_OTLP_ENDPOINT` is set:** an OpenTelemetry **OTLP** (gRPC)
-  trace exporter, with `service.name` set to the name you pass. Spans flow
-  straight to your backend (Tempo / a collector).
+  trace exporter, with service/deployment/Kubernetes resource attributes. Spans
+  flow to the local collector first.
 
-**Direct-OTLP, all-Rust:** services export OTLP themselves — no Go collector is
-required in the path (add one only if you want central batching/routing). With no
-endpoint set (local dev), it degrades to plain stdout logging.
+The production path is collector-first: services emit JSON stdout logs for node
+collection and send OTLP traces to a local OpenTelemetry collector. With no
+endpoint set (local dev), telemetry degrades to stdout-only logging.
 
 ## Config
 
 | Env | Effect |
 |-----|--------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | e.g. `http://otel-collector:4317` — enables OTLP trace export |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | e.g. `http://fiducia-otel-agent:4317` — enables OTLP trace export |
+| `FIDUCIA_LOG_FORMAT` | `json` by default; set `text` / `pretty` / `compact` for local logs |
+| `OTEL_SERVICE_NAMESPACE` | service namespace resource attribute, default `fiducia-cloud` |
+| `FIDUCIA_DEPLOYMENT_ENV` | deployment environment resource attribute |
+| `FIDUCIA_CLUSTER` / `FIDUCIA_CLUSTER_ID` | cluster resource attributes from the k8s topology ConfigMap |
+| `POD_NAMESPACE` / `POD_NAME` / `NODE_NAME` | Kubernetes resource attributes from downward API |
+| `OTEL_RESOURCE_ATTRIBUTES` | comma-separated extra resource attributes |
 | `RUST_LOG` | log/trace filter (e.g. `info,fiducia_node=debug`) |
 
 ## Roadmap
 
-Traces ship today. Next, behind the same `init`: OTLP **metrics** (Prometheus via
-OTLP receiver / remote-write) and OTLP **logs** (Loki via its OTLP endpoint) — so
-the Prometheus/Loki/Tempo trio is fed entirely over OTLP from Rust.
+Traces and JSON logs ship today. Next, behind the same `init`: explicit app
+metrics and high-value structured events that the observability gateway can
+store in Cockroach TTL tables without ingesting every raw log line into SQL.
 
 ## Used as a dependency
 
