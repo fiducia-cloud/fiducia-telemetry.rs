@@ -1,3 +1,4 @@
+# Crate manifest: package metadata and dependencies for the fiducia-telemetry library.
 [package]
 name = "fiducia-telemetry"
 version = "0.1.0"
