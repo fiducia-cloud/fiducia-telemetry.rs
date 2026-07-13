@@ -48,6 +48,9 @@ pub fn init(service_name: &str) {
             match opentelemetry_otlp::SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(&endpoint)
+                // A wedged collector must stall exports, not the process; the
+                // batch worker drops batches that exceed this deadline.
+                .with_timeout(std::time::Duration::from_secs(10))
                 .build()
             {
                 Ok(exporter) => {
@@ -85,8 +88,18 @@ pub fn init(service_name: &str) {
 
 /// Flush + shut down the tracer provider. Call before exit if you want a clean
 /// final flush (long-running servers can skip it — batches flush periodically).
+///
+/// The underlying flush blocks; running it on a dedicated thread keeps this
+/// safe to call from any context, including a current-thread Tokio runtime
+/// (where blocking in-place would deadlock the batch worker).
 pub fn shutdown() {
-    opentelemetry::global::shutdown_tracer_provider();
+    let done = std::thread::spawn(|| {
+        opentelemetry::global::shutdown_tracer_provider();
+    })
+    .join();
+    if done.is_err() {
+        eprintln!("telemetry: shutdown flush panicked; spans may be dropped");
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +154,13 @@ fn resource(service_name: &str) -> Resource {
     push_env_attr(&mut attrs, &["POD_NAME"], "k8s.pod.name");
     push_env_attr(&mut attrs, &["NODE_NAME"], "k8s.node.name");
     push_env_attr(&mut attrs, &["SERVICE_VERSION"], "service.version");
+    // Distinguish replicas of the same service: pod name in k8s, hostname
+    // elsewhere. Without this, multi-replica traces collapse into one instance.
+    push_env_attr(
+        &mut attrs,
+        &["POD_NAME", "HOSTNAME"],
+        "service.instance.id",
+    );
     push_otel_resource_attributes(&mut attrs);
 
     Resource::new(attrs)
@@ -253,6 +273,9 @@ fn otel_resource_attribute_pairs(raw: &str) -> Vec<(String, String)> {
 }
 
 fn is_sensitive_attribute_key(key: &str) -> bool {
+    // Substring match after normalization: over-redacting an operator-supplied
+    // resource attribute is harmless; leaking `my_secret_value` or `token_id`
+    // (which exact/suffix matching missed) is not.
     let normalized = key.trim().to_ascii_lowercase().replace(['-', '.'], "_");
     [
         "authorization",
@@ -263,9 +286,14 @@ fn is_sensitive_attribute_key(key: &str) -> bool {
         "token",
         "api_key",
         "apikey",
+        "credential",
+        "bearer",
+        "private_key",
+        "session",
+        "jwt",
     ]
     .iter()
-    .any(|sensitive| normalized == *sensitive || normalized.ends_with(&format!("_{sensitive}")))
+    .any(|sensitive| normalized.contains(sensitive))
 }
 
 #[cfg(test)]
@@ -335,9 +363,21 @@ mod interface_contract_tests {
             "db.password",
             "service-api-key",
             "access_token",
+            // Substring matching also covers infix/prefix placements that the
+            // earlier exact/suffix rule let through.
+            "my_secret_value",
+            "token_id",
+            "apitoken",
+            "aws_credential_arn",
+            "bearer_header",
+            "tls_private_key_path",
+            "session_cookie_name",
+            "jwt_issuer",
         ] {
             assert!(super::is_sensitive_attribute_key(key), "accepted {key}");
         }
         assert!(!super::is_sensitive_attribute_key("service.version"));
+        assert!(!super::is_sensitive_attribute_key("cloud.region"));
+        assert!(!super::is_sensitive_attribute_key("deployment.environment"));
     }
 }
