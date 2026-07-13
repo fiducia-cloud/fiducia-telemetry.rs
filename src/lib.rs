@@ -380,11 +380,22 @@ mod interface_contract_tests {
             "tls_private_key_path",
             "session_cookie_name",
             "jwt_issuer",
+            // Newly covered false-negatives: abbreviated/spelled-out passwords,
+            // signing keys, and PII (email) reaching the exporter via a
+            // resource-attribute key.
+            "db_pwd",
+            "user_passphrase",
+            "webhook_signing_key",
+            "user.email",
+            "contact_email_address",
         ] {
             assert!(super::is_sensitive_attribute_key(key), "accepted {key}");
         }
         assert!(!super::is_sensitive_attribute_key("service.version"));
         assert!(!super::is_sensitive_attribute_key("cloud.region"));
         assert!(!super::is_sensitive_attribute_key("deployment.environment"));
+        // Non-secret keys that must stay exported (guard against over-redaction).
+        assert!(!super::is_sensitive_attribute_key("k8s.pod.name"));
+        assert!(!super::is_sensitive_attribute_key("service.instance.id"));
     }
 }
