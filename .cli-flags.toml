@@ -1,0 +1,39 @@
+# flags-2-env flag schema for the fiducia-telemetry CLI surface: maps
+# command-line flags to the env vars the library reads at init(). Consumed by
+# scripts/with-flags2env.sh and audited in CI (cli-flags.yml).
+[help]
+url = "https://github.com/fiducia-cloud/fiducia-telemetry.rs"
+columns = ["options", "env", "type", "description"]
+
+[parse]
+allow_unknown = false
+
+[flags.log-format]
+env = "FIDUCIA_LOG_FORMAT"
+aliases = ["log-format"]
+type = "string"
+help = "Log output format: json (default) or text/plain/pretty/compact."
+
+[flags.no-color]
+env = "NO_COLOR"
+aliases = ["no-color"]
+type = "bool"
+help = "Disable ANSI color in text logs."
+
+[flags.otlp-endpoint]
+env = "OTEL_EXPORTER_OTLP_ENDPOINT"
+aliases = ["otlp-endpoint"]
+type = "string"
+help = "OTLP gRPC endpoint; enables trace export when set."
+
+[flags.otel-log-format]
+env = "OTEL_LOG_FORMAT"
+aliases = ["otel-log-format"]
+type = "string"
+help = "Fallback log format if FIDUCIA_LOG_FORMAT is unset."
+
+[flags.resource-attributes]
+env = "OTEL_RESOURCE_ATTRIBUTES"
+aliases = ["resource-attributes"]
+type = "string"
+help = "Comma-separated extra resource attributes (key=value,...)."

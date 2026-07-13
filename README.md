@@ -27,16 +27,45 @@ endpoint set (local dev), telemetry degrades to stdout-only logging.
 
 ## Config
 
-| Env | Effect |
-|-----|--------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | e.g. `http://fiducia-otel-agent:4317` — enables OTLP trace export |
-| `FIDUCIA_LOG_FORMAT` | `json` by default; set `text` / `pretty` / `compact` for local logs |
-| `OTEL_SERVICE_NAMESPACE` | service namespace resource attribute, default `fiducia-cloud` |
-| `FIDUCIA_DEPLOYMENT_ENV` | deployment environment resource attribute |
-| `FIDUCIA_CLUSTER` / `FIDUCIA_CLUSTER_ID` | cluster resource attributes from the k8s topology ConfigMap |
-| `POD_NAMESPACE` / `POD_NAME` / `NODE_NAME` | Kubernetes resource attributes from downward API |
-| `OTEL_RESOURCE_ATTRIBUTES` | comma-separated extra resource attributes |
-| `RUST_LOG` | log/trace filter (e.g. `info,fiducia_node=debug`) |
+All configuration is via environment variables. **None are secrets** — they are
+endpoints, format switches, and resource labels, safe to set in plain
+ConfigMaps and to log.
+
+| Var | Required | Secret | Description |
+|-----|----------|--------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | no | OTLP gRPC endpoint, e.g. `http://fiducia-otel-agent:4317`; enables trace export when set. Unset = stdout-only. |
+| `FIDUCIA_LOG_FORMAT` | no | no | Log output format: `json` (default) or `text` / `plain` / `pretty` / `compact`. |
+| `OTEL_LOG_FORMAT` | no | no | Fallback log format used when `FIDUCIA_LOG_FORMAT` is unset. |
+| `NO_COLOR` | no | no | If set (any value), disables ANSI color in text logs. |
+| `OTEL_RESOURCE_ATTRIBUTES` | no | no | Comma-separated extra resource attributes (`key=value,...`). |
+| `OTEL_SERVICE_NAMESPACE` | no | no | Service namespace resource attribute, default `fiducia-cloud`. |
+| `FIDUCIA_DEPLOYMENT_ENV` | no | no | Deployment environment resource attribute. |
+| `FIDUCIA_CLUSTER` / `FIDUCIA_CLUSTER_ID` | no | no | Cluster resource attributes from the k8s topology ConfigMap. |
+| `POD_NAMESPACE` / `POD_NAME` / `NODE_NAME` | no | no | Kubernetes resource attributes from the downward API. |
+| `RUST_LOG` | no | no | Log/trace filter, e.g. `info,fiducia_node=debug`. |
+
+### Setting config from CLI flags (flags-2-env)
+
+The `FIDUCIA_LOG_FORMAT`, `NO_COLOR`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_LOG_FORMAT`, and `OTEL_RESOURCE_ATTRIBUTES` vars can be driven from CLI
+flags via the pinned `ORESoftware/flags-2-env` parser (schema in
+`.cli-flags.toml`, audited in CI by `.github/workflows/cli-flags.yml`):
+
+```bash
+git submodule update --init --recursive
+make -C vendor/flags-2-env all
+scripts/with-flags2env.sh --log-format=text --no-color --otlp-endpoint=http://fiducia-otel-agent:4317 -- cargo run
+```
+
+`scripts/with-flags2env.sh` maps the flags to the env vars `init()` reads, then
+execs the given command.
+
+## Security / hardening
+
+`cargo audit` is **clean** (no known advisories in the dependency tree, 127
+crates scanned). None of the configuration variables above are secrets, so the
+endpoint value logged at startup is safe to emit. Dependency bumps are kept
+within semver to avoid breaking the shared `init()` contract.
 
 ## Roadmap
 
