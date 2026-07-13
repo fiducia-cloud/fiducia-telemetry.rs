@@ -363,9 +363,21 @@ mod interface_contract_tests {
             "db.password",
             "service-api-key",
             "access_token",
+            // Substring matching also covers infix/prefix placements that the
+            // earlier exact/suffix rule let through.
+            "my_secret_value",
+            "token_id",
+            "apitoken",
+            "aws_credential_arn",
+            "bearer_header",
+            "tls_private_key_path",
+            "session_cookie_name",
+            "jwt_issuer",
         ] {
             assert!(super::is_sensitive_attribute_key(key), "accepted {key}");
         }
         assert!(!super::is_sensitive_attribute_key("service.version"));
+        assert!(!super::is_sensitive_attribute_key("cloud.region"));
+        assert!(!super::is_sensitive_attribute_key("deployment.environment"));
     }
 }
