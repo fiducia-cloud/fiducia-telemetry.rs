@@ -154,6 +154,13 @@ fn resource(service_name: &str) -> Resource {
     push_env_attr(&mut attrs, &["POD_NAME"], "k8s.pod.name");
     push_env_attr(&mut attrs, &["NODE_NAME"], "k8s.node.name");
     push_env_attr(&mut attrs, &["SERVICE_VERSION"], "service.version");
+    // Distinguish replicas of the same service: pod name in k8s, hostname
+    // elsewhere. Without this, multi-replica traces collapse into one instance.
+    push_env_attr(
+        &mut attrs,
+        &["POD_NAME", "HOSTNAME"],
+        "service.instance.id",
+    );
     push_otel_resource_attributes(&mut attrs);
 
     Resource::new(attrs)
