@@ -48,6 +48,9 @@ pub fn init(service_name: &str) {
             match opentelemetry_otlp::SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(&endpoint)
+                // A wedged collector must stall exports, not the process; the
+                // batch worker drops batches that exceed this deadline.
+                .with_timeout(std::time::Duration::from_secs(10))
                 .build()
             {
                 Ok(exporter) => {
@@ -60,16 +63,15 @@ pub fn init(service_name: &str) {
                     install_otlp_subscriber(filter, log_format, tracer);
                     tracing::info!(
                         service.name = service_name,
-                        otlp.endpoint = %endpoint,
                         log.format = log_format.as_str(),
                         "telemetry: OTLP export enabled"
                     );
                 }
-                Err(e) => {
+                Err(_) => {
                     install_stdout_subscriber(filter, log_format);
-                    tracing::error!(
-                        "telemetry: OTLP exporter init failed ({e}); using stdout only"
-                    );
+                    // Exporter errors can echo a credential-bearing endpoint;
+                    // keep the startup failure useful without logging its text.
+                    tracing::error!("telemetry: OTLP exporter init failed; using stdout only");
                 }
             }
         }
@@ -244,13 +246,29 @@ fn otel_resource_attribute_pairs(raw: &str) -> Vec<(String, String)> {
             let (key, value) = pair.split_once('=')?;
             let key = key.trim();
             let value = value.trim();
-            if !key.is_empty() && !value.is_empty() {
+            if !key.is_empty() && !value.is_empty() && !is_sensitive_attribute_key(key) {
                 Some((key.to_string(), value.to_string()))
             } else {
                 None
             }
         })
         .collect()
+}
+
+fn is_sensitive_attribute_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase().replace(['-', '.'], "_");
+    [
+        "authorization",
+        "cookie",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+    ]
+    .iter()
+    .any(|sensitive| normalized == *sensitive || normalized.ends_with(&format!("_{sensitive}")))
 }
 
 #[cfg(test)]
@@ -300,7 +318,7 @@ mod interface_contract_tests {
     #[test]
     fn otel_resource_attribute_parser_trims_and_drops_invalid_pairs() {
         let attrs = super::otel_resource_attribute_pairs(
-            "service.version=1.2.3, missing-value=, =missing-key, cloud.region = us-east-1 ,bad",
+            "service.version=1.2.3, missing-value=, =missing-key, cloud.region = us-east-1 ,bad,auth.token=do-not-export,database_password=nope",
         );
 
         assert_eq!(
@@ -310,5 +328,19 @@ mod interface_contract_tests {
                 ("cloud.region".to_string(), "us-east-1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn sensitive_resource_attribute_keys_are_rejected() {
+        for key in [
+            "authorization",
+            "http.cookie",
+            "db.password",
+            "service-api-key",
+            "access_token",
+        ] {
+            assert!(super::is_sensitive_attribute_key(key), "accepted {key}");
+        }
+        assert!(!super::is_sensitive_attribute_key("service.version"));
     }
 }
