@@ -64,7 +64,7 @@ execs the given command.
 
 This crate consumes generated contracts from the sibling `fiducia-interfaces`
 repository. CI and the test Dockerfile pin it to commit
-`bbd8b52ce729ec34b0a9bff4dda6d0a448181797` instead of a moving branch. The
+`5f2c5279ee19941024455b2843256872485bac82` instead of a moving branch. The
 Docker build checks that commit out detached and verifies that the resulting
 full `HEAD` equals `INTERFACES_SHA`; a branch, tag, or abbreviated hash fails
 closed. Both the image build and its default test command require the committed
