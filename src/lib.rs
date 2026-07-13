@@ -88,8 +88,18 @@ pub fn init(service_name: &str) {
 
 /// Flush + shut down the tracer provider. Call before exit if you want a clean
 /// final flush (long-running servers can skip it — batches flush periodically).
+///
+/// The underlying flush blocks; running it on a dedicated thread keeps this
+/// safe to call from any context, including a current-thread Tokio runtime
+/// (where blocking in-place would deadlock the batch worker).
 pub fn shutdown() {
-    opentelemetry::global::shutdown_tracer_provider();
+    let done = std::thread::spawn(|| {
+        opentelemetry::global::shutdown_tracer_provider();
+    })
+    .join();
+    if done.is_err() {
+        eprintln!("telemetry: shutdown flush panicked; spans may be dropped");
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
