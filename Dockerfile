@@ -1,19 +1,22 @@
 # syntax=docker/dockerfile:1
 # CI/test image for the shared telemetry library.
-FROM rust:1-slim-bookworm
+FROM rust:1.95.0-slim-bookworm
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates
-WORKDIR /build
-ARG INTERFACES_REF=main
-RUN git clone --depth 1 --branch "$INTERFACES_REF" \
-    https://github.com/fiducia-cloud/fiducia-interfaces.git fiducia-interfaces
-COPY . fiducia-telemetry.rs
-WORKDIR /build/fiducia-telemetry.rs
-RUN cargo test
-# Run the container as an unprivileged user instead of root. Create the user and
-# hand it the build tree + cargo caches so `cargo test` can still write target/
-# and the registry lock when the image is run.
 RUN useradd --create-home --uid 10001 ci \
-    && chown -R ci:ci /build "${CARGO_HOME:-/usr/local/cargo}"
-USER ci
-CMD ["cargo", "test"]
+    && install -d -o 10001 -g 10001 /build /home/ci/.cargo
+ENV CARGO_HOME=/home/ci/.cargo
+USER 10001:10001
+WORKDIR /build
+# Immutable cross-repository input. Bump this SHA together with the CI checkout.
+ARG INTERFACES_SHA=bbd8b52ce729ec34b0a9bff4dda6d0a448181797
+RUN git init fiducia-interfaces \
+    && git -C fiducia-interfaces remote add origin \
+       https://github.com/fiducia-cloud/fiducia-interfaces.git \
+    && git -C fiducia-interfaces fetch --depth 1 origin "$INTERFACES_SHA" \
+    && git -C fiducia-interfaces checkout --detach FETCH_HEAD \
+    && test "$(git -C fiducia-interfaces rev-parse HEAD)" = "$INTERFACES_SHA"
+COPY --chown=10001:10001 . fiducia-telemetry.rs
+WORKDIR /build/fiducia-telemetry.rs
+RUN cargo test --locked
+CMD ["cargo", "test", "--locked"]

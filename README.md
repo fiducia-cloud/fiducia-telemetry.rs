@@ -54,11 +54,29 @@ from CLI flags via the pinned `ORESoftware/flags-2-env` parser (schema in
 git submodule update --init --recursive
 make -C vendor/flags-2-env all
 OTEL_EXPORTER_OTLP_ENDPOINT=http://fiducia-otel-agent:4317 \
-  scripts/with-flags2env.sh --log-format=text --no-color -- cargo run
+  scripts/with-flags2env.sh --log-format=text --no-color -- cargo run --locked
 ```
 
 `scripts/with-flags2env.sh` maps the flags to the env vars `init()` reads, then
 execs the given command.
+
+## Reproducible CI/test image
+
+This crate consumes generated contracts from the sibling `fiducia-interfaces`
+repository. CI and the test Dockerfile pin it to commit
+`bbd8b52ce729ec34b0a9bff4dda6d0a448181797` instead of a moving branch. The
+Docker build checks that commit out detached and verifies that the resulting
+full `HEAD` equals `INTERFACES_SHA`; a branch, tag, or abbreviated hash fails
+closed. Both the image build and its default test command require the committed
+Cargo lockfile. After installing system packages, the Dockerfile switches to
+numeric uid/gid `10001` before fetching contracts, compiling, or running tests;
+the build tree and Cargo home are owned only by that unprivileged account.
+
+```bash
+docker build \
+  --build-arg INTERFACES_SHA=<40-character-commit-sha> \
+  -t fiducia-telemetry:test .
+```
 
 ## Security / hardening
 
