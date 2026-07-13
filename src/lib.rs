@@ -273,6 +273,9 @@ fn otel_resource_attribute_pairs(raw: &str) -> Vec<(String, String)> {
 }
 
 fn is_sensitive_attribute_key(key: &str) -> bool {
+    // Substring match after normalization: over-redacting an operator-supplied
+    // resource attribute is harmless; leaking `my_secret_value` or `token_id`
+    // (which exact/suffix matching missed) is not.
     let normalized = key.trim().to_ascii_lowercase().replace(['-', '.'], "_");
     [
         "authorization",
@@ -283,9 +286,14 @@ fn is_sensitive_attribute_key(key: &str) -> bool {
         "token",
         "api_key",
         "apikey",
+        "credential",
+        "bearer",
+        "private_key",
+        "session",
+        "jwt",
     ]
     .iter()
-    .any(|sensitive| normalized == *sensitive || normalized.ends_with(&format!("_{sensitive}")))
+    .any(|sensitive| normalized.contains(sensitive))
 }
 
 #[cfg(test)]
