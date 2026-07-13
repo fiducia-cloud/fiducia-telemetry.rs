@@ -282,6 +282,9 @@ fn is_sensitive_attribute_key(key: &str) -> bool {
         "cookie",
         "password",
         "passwd",
+        // Abbreviated / spelled-out password variants the exact words above miss.
+        "pwd",
+        "passphrase",
         "secret",
         "token",
         "api_key",
@@ -289,8 +292,12 @@ fn is_sensitive_attribute_key(key: &str) -> bool {
         "credential",
         "bearer",
         "private_key",
+        // A signing key is a secret even though it is not a "private_key".
+        "signing_key",
         "session",
         "jwt",
+        // PII: an address in a resource attribute must not reach the exporter.
+        "email",
     ]
     .iter()
     .any(|sensitive| normalized.contains(sensitive))
