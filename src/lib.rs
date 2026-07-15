@@ -136,33 +136,54 @@ impl LogFormat {
 }
 
 fn resource(service_name: &str) -> Resource {
+    Resource::new(resource_attributes(service_name, |name| {
+        std::env::var(name).ok()
+    }))
+}
+
+/// The full resource-attribute assembly, with the environment injected so the
+/// precedence and fallback rules are unit-testable without process-global env
+/// mutation (which races across parallel tests).
+fn resource_attributes(service_name: &str, get: impl Fn(&str) -> Option<String>) -> Vec<KeyValue> {
+    let non_empty = |name: &str| get(name).filter(|value| !value.trim().is_empty());
+    let first_of = |names: &[&str]| names.iter().find_map(|name| non_empty(name));
+
     let mut attrs = vec![
         KeyValue::new("service.name", service_name.to_string()),
         KeyValue::new(
             "service.namespace",
-            env_or("OTEL_SERVICE_NAMESPACE", "fiducia-cloud"),
+            non_empty("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|| "fiducia-cloud".to_string()),
         ),
     ];
 
-    push_env_attr(
-        &mut attrs,
+    let mut push = |names: &[&str], key: &'static str| {
+        if let Some(value) = first_of(names) {
+            attrs.push(KeyValue::new(key, value));
+        }
+    };
+    push(
         &["FIDUCIA_DEPLOYMENT_ENV", "DEPLOYMENT_ENV"],
         "deployment.environment",
     );
-    push_env_attr(&mut attrs, &["FIDUCIA_CLUSTER"], "fiducia.cluster");
-    push_env_attr(&mut attrs, &["FIDUCIA_CLUSTER_ID"], "fiducia.cluster_id");
-    push_env_attr(&mut attrs, &["FIDUCIA_CLOUD_PROVIDER"], "cloud.provider");
-    push_env_attr(&mut attrs, &["FIDUCIA_CLOUD_REGION"], "cloud.region");
-    push_env_attr(&mut attrs, &["POD_NAMESPACE"], "k8s.namespace.name");
-    push_env_attr(&mut attrs, &["POD_NAME"], "k8s.pod.name");
-    push_env_attr(&mut attrs, &["NODE_NAME"], "k8s.node.name");
-    push_env_attr(&mut attrs, &["SERVICE_VERSION"], "service.version");
+    push(&["FIDUCIA_CLUSTER"], "fiducia.cluster");
+    push(&["FIDUCIA_CLUSTER_ID"], "fiducia.cluster_id");
+    push(&["FIDUCIA_CLOUD_PROVIDER"], "cloud.provider");
+    push(&["FIDUCIA_CLOUD_REGION"], "cloud.region");
+    push(&["POD_NAMESPACE"], "k8s.namespace.name");
+    push(&["POD_NAME"], "k8s.pod.name");
+    push(&["NODE_NAME"], "k8s.node.name");
+    push(&["SERVICE_VERSION"], "service.version");
     // Distinguish replicas of the same service: pod name in k8s, hostname
     // elsewhere. Without this, multi-replica traces collapse into one instance.
-    push_env_attr(&mut attrs, &["POD_NAME", "HOSTNAME"], "service.instance.id");
-    push_otel_resource_attributes(&mut attrs);
+    push(&["POD_NAME", "HOSTNAME"], "service.instance.id");
 
-    Resource::new(attrs)
+    if let Some(raw) = get("OTEL_RESOURCE_ATTRIBUTES") {
+        for (key, value) in otel_resource_attribute_pairs(&raw) {
+            attrs.push(KeyValue::new(key, value));
+        }
+    }
+
+    attrs
 }
 
 fn install_otlp_subscriber(filter: EnvFilter, log_format: LogFormat, tracer: Tracer) {
@@ -226,34 +247,6 @@ where
         .with_ansi(std::env::var("NO_COLOR").is_err())
         .with_target(true)
         .with_span_events(FmtSpan::CLOSE)
-}
-
-fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
-
-fn push_env_attr(attrs: &mut Vec<KeyValue>, names: &[&str], key: &'static str) {
-    for name in names {
-        if let Ok(value) = std::env::var(name) {
-            if !value.trim().is_empty() {
-                attrs.push(KeyValue::new(key, value));
-                return;
-            }
-        }
-    }
-}
-
-fn push_otel_resource_attributes(attrs: &mut Vec<KeyValue>) {
-    let Ok(raw) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") else {
-        return;
-    };
-
-    for (key, value) in otel_resource_attribute_pairs(&raw) {
-        attrs.push(KeyValue::new(key, value));
-    }
 }
 
 fn otel_resource_attribute_pairs(raw: &str) -> Vec<(String, String)> {
@@ -414,5 +407,102 @@ mod interface_contract_tests {
         // Non-secret keys that must stay exported (guard against over-redaction).
         assert!(!super::is_sensitive_attribute_key("k8s.pod.name"));
         assert!(!super::is_sensitive_attribute_key("service.instance.id"));
+    }
+}
+
+#[cfg(test)]
+mod resource_assembly_tests {
+    use std::collections::HashMap;
+
+    use opentelemetry::{Key, KeyValue};
+
+    /// Drive the assembly with a fake environment (no process-global env
+    /// mutation, which races across parallel tests).
+    fn attrs(env: &[(&str, &str)]) -> Vec<KeyValue> {
+        let map: HashMap<String, String> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        super::resource_attributes("test-service", |name| map.get(name).cloned())
+    }
+
+    fn value_of<'a>(attrs: &'a [KeyValue], key: &str) -> Option<String> {
+        let key = Key::new(key.to_string());
+        attrs
+            .iter()
+            .find(|kv| kv.key == key)
+            .map(|kv| kv.value.to_string())
+    }
+
+    #[test]
+    fn service_identity_defaults_are_always_present() {
+        let attrs = attrs(&[]);
+        assert_eq!(
+            value_of(&attrs, "service.name").as_deref(),
+            Some("test-service")
+        );
+        assert_eq!(
+            value_of(&attrs, "service.namespace").as_deref(),
+            Some("fiducia-cloud"),
+            "namespace falls back to the fleet default"
+        );
+        assert_eq!(
+            value_of(&attrs, "service.instance.id"),
+            None,
+            "no POD_NAME/HOSTNAME ⇒ no fabricated instance id"
+        );
+    }
+
+    #[test]
+    fn fiducia_env_wins_over_generic_and_empty_values_fall_through() {
+        let attrs = attrs(&[
+            ("FIDUCIA_DEPLOYMENT_ENV", "prod"),
+            ("DEPLOYMENT_ENV", "staging"),
+            ("FIDUCIA_CLUSTER", "   "), // whitespace-only must be skipped
+        ]);
+        assert_eq!(
+            value_of(&attrs, "deployment.environment").as_deref(),
+            Some("prod"),
+            "the FIDUCIA_-prefixed variable takes precedence"
+        );
+        assert_eq!(
+            value_of(&attrs, "fiducia.cluster"),
+            None,
+            "a whitespace-only value must not become an attribute"
+        );
+    }
+
+    #[test]
+    fn instance_id_prefers_pod_name_and_falls_back_to_hostname() {
+        let with_pod = attrs(&[("POD_NAME", "brain-0"), ("HOSTNAME", "ignored")]);
+        assert_eq!(
+            value_of(&with_pod, "service.instance.id").as_deref(),
+            Some("brain-0")
+        );
+        assert_eq!(
+            value_of(&with_pod, "k8s.pod.name").as_deref(),
+            Some("brain-0")
+        );
+
+        let with_host = attrs(&[("HOSTNAME", "dev-laptop")]);
+        assert_eq!(
+            value_of(&with_host, "service.instance.id").as_deref(),
+            Some("dev-laptop"),
+            "outside k8s the hostname identifies the replica"
+        );
+    }
+
+    #[test]
+    fn operator_resource_attributes_are_appended_with_secrets_redacted() {
+        let attrs = attrs(&[(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "team=coordination,api_key=must-not-export",
+        )]);
+        assert_eq!(value_of(&attrs, "team").as_deref(), Some("coordination"));
+        assert_eq!(
+            value_of(&attrs, "api_key"),
+            None,
+            "sensitive operator-supplied keys are dropped"
+        );
     }
 }

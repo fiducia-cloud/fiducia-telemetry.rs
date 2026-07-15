@@ -90,8 +90,11 @@ are kept within semver to avoid breaking the shared `init()` contract.
 ## Roadmap
 
 Traces and JSON logs ship today. Next, behind the same `init`: explicit app
-metrics and high-value structured events that the observability gateway can
-store in Cockroach TTL tables without ingesting every raw log line into SQL.
+metrics — the deployed otel-agent Collector (`fiducia-infra/base/observability`)
+already runs a live OTLP metrics pipeline to the observability gateway, but no
+service emits OTLP metrics yet (today's metrics travel via the node-sidecar's
+Prometheus `/metrics` and lambda's hand-rolled endpoint). Also: high-value
+structured events the gateway can store without ingesting every raw log line.
 
 ## Used as a dependency
 
@@ -103,4 +106,7 @@ fiducia-telemetry = { git = "https://github.com/fiducia-cloud/fiducia-telemetry.
 
 ## Consumers
 
-`fiducia-node` · `fiducia-brain` · `fiducia-load-balance` · `fiducia-node-sidecar` · `fiducia-auth` · `fiducia-backend`
+`fiducia-node` · `fiducia-brain` · `fiducia-load-balance` · `fiducia-node-sidecar`
+· `fiducia-auth` · `fiducia-backend` · `fiducia-admin` · `fiducia-customer`
+· `fiducia-ai-agent-manager` · `fiducia-lambda-service` · `fiducia-ai-agent-bridge`
+· `fiducia-ai-agent-control-plane` · `fiducia-operations-control-plane` · `fiducia-memory`
