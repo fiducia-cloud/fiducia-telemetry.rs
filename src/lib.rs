@@ -362,6 +362,24 @@ mod interface_contract_tests {
     }
 
     #[test]
+    fn otel_resource_attribute_parser_preserves_equals_inside_values() {
+        let attrs = super::otel_resource_attribute_pairs(
+            "build.url=https://ci.example/run?branch=main,service.version=1.2.3+sha=abc",
+        );
+
+        assert_eq!(
+            attrs,
+            vec![
+                (
+                    "build.url".to_string(),
+                    "https://ci.example/run?branch=main".to_string(),
+                ),
+                ("service.version".to_string(), "1.2.3+sha=abc".to_string(),),
+            ]
+        );
+    }
+
+    #[test]
     fn sensitive_resource_attribute_keys_are_rejected() {
         for key in [
             "authorization",
