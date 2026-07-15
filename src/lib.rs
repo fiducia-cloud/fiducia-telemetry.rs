@@ -113,6 +113,9 @@ impl LogFormat {
         Self::from_value(
             &std::env::var("FIDUCIA_LOG_FORMAT")
                 .or_else(|_| std::env::var("OTEL_LOG_FORMAT"))
+                // Compatibility for services that predate the shared telemetry
+                // crate. Fleet-specific variables above keep precedence.
+                .or_else(|_| std::env::var("LOG_FORMAT"))
                 .unwrap_or_else(|_| "json".to_string()),
         )
     }
@@ -156,11 +159,7 @@ fn resource(service_name: &str) -> Resource {
     push_env_attr(&mut attrs, &["SERVICE_VERSION"], "service.version");
     // Distinguish replicas of the same service: pod name in k8s, hostname
     // elsewhere. Without this, multi-replica traces collapse into one instance.
-    push_env_attr(
-        &mut attrs,
-        &["POD_NAME", "HOSTNAME"],
-        "service.instance.id",
-    );
+    push_env_attr(&mut attrs, &["POD_NAME", "HOSTNAME"], "service.instance.id");
     push_otel_resource_attributes(&mut attrs);
 
     Resource::new(attrs)

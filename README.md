@@ -16,7 +16,8 @@ async fn main() {
 
 - **Always:** JSON structured logs to stdout, filtered by `RUST_LOG` /
   `EnvFilter` (default `info`). Set `FIDUCIA_LOG_FORMAT=text` for local
-  terminal-friendly logs.
+  terminal-friendly logs. `OTEL_LOG_FORMAT` and legacy `LOG_FORMAT` are
+  fallbacks, in that order.
 - **When `OTEL_EXPORTER_OTLP_ENDPOINT` is set:** an OpenTelemetry **OTLP** (gRPC)
   trace exporter, with service/deployment/Kubernetes resource attributes. Spans
   flow to the local collector first.
@@ -36,6 +37,7 @@ query parameters; it is never logged or exposed as a CLI flag.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | potentially | OTLP gRPC endpoint, e.g. `http://fiducia-otel-agent:4317`; enables trace export when set. Unset = stdout-only. Never logged or accepted on argv. |
 | `FIDUCIA_LOG_FORMAT` | no | no | Log output format: `json` (default) or `text` / `plain` / `pretty` / `compact`. |
 | `OTEL_LOG_FORMAT` | no | no | Fallback log format used when `FIDUCIA_LOG_FORMAT` is unset. |
+| `LOG_FORMAT` | no | no | Legacy fallback used only when both telemetry-specific log-format variables are unset. |
 | `NO_COLOR` | no | no | If set (any value), disables ANSI color in text logs. |
 | `OTEL_RESOURCE_ATTRIBUTES` | no | must not contain secrets | Comma-separated extra resource attributes (`key=value,...`). Sensitive key names such as token/password/cookie/API key are dropped. |
 | `OTEL_SERVICE_NAMESPACE` | no | no | Service namespace resource attribute, default `fiducia-cloud`. |
