@@ -506,3 +506,77 @@ mod resource_assembly_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod init_smoke_tests {
+    /// Child half of the subprocess test: only acts when the parent sets the
+    /// env marker; a normal test run sees it pass as a no-op. Re-executing the
+    /// test binary is the only way to observe `init()` end-to-end — it installs
+    /// a process-global subscriber that can be set exactly once.
+    #[test]
+    fn subprocess_emit_helper() {
+        if std::env::var("RUN_TELEMETRY_INIT_SUBPROCESS").as_deref() != Ok("1") {
+            return;
+        }
+        super::init("subproc-smoke");
+        tracing::info!(probe = "init-smoke", "hello from the subprocess");
+    }
+
+    /// `init()` was previously untested end-to-end. Re-exec this test binary
+    /// with the child marker: the stdout path (no OTLP endpoint) must install
+    /// and emit parseable JSON lines carrying the service name and our probe
+    /// event — the contract every fleet service and the otel-agent filelog
+    /// pipeline rely on.
+    #[test]
+    fn init_emits_wellformed_json_lines_in_a_subprocess() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "init_smoke_tests::subprocess_emit_helper",
+                "--nocapture",
+            ])
+            .env("RUN_TELEMETRY_INIT_SUBPROCESS", "1")
+            .env("FIDUCIA_LOG_FORMAT", "json")
+            .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .env_remove("RUST_LOG")
+            .output()
+            .expect("spawn subprocess");
+        assert!(
+            output.status.success(),
+            "subprocess failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let events: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        assert!(!events.is_empty(), "no JSON log lines on stdout:\n{stdout}");
+
+        let startup = events
+            .iter()
+            .find(|event| {
+                event["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("stdout export enabled"))
+            })
+            .unwrap_or_else(|| panic!("startup line missing:\n{stdout}"));
+        assert_eq!(
+            startup["service.name"], "subproc-smoke",
+            "the startup line must carry the service name: {startup}"
+        );
+        assert_eq!(startup["log.format"], "json");
+
+        let probe = events
+            .iter()
+            .find(|event| event["probe"] == "init-smoke")
+            .unwrap_or_else(|| panic!("probe event missing:\n{stdout}"));
+        assert_eq!(probe["level"], "INFO");
+        assert!(
+            probe["target"].as_str().is_some(),
+            "structured metadata (target) must be present: {probe}"
+        );
+    }
+}
