@@ -110,13 +110,20 @@ enum LogFormat {
 
 impl LogFormat {
     fn from_env() -> Self {
+        Self::from_env_with(|name| std::env::var(name).ok())
+    }
+
+    /// The precedence chain with the environment injected, so it is
+    /// unit-testable without process-global env mutation (which races across
+    /// parallel tests) — same pattern as [`resource_attributes`].
+    fn from_env_with(get: impl Fn(&str) -> Option<String>) -> Self {
         Self::from_value(
-            &std::env::var("FIDUCIA_LOG_FORMAT")
-                .or_else(|_| std::env::var("OTEL_LOG_FORMAT"))
+            &get("FIDUCIA_LOG_FORMAT")
+                .or_else(|| get("OTEL_LOG_FORMAT"))
                 // Compatibility for services that predate the shared telemetry
                 // crate. Fleet-specific variables above keep precedence.
-                .or_else(|_| std::env::var("LOG_FORMAT"))
-                .unwrap_or_else(|_| "json".to_string()),
+                .or_else(|| get("LOG_FORMAT"))
+                .unwrap_or_else(|| "json".to_string()),
         )
     }
 
@@ -337,6 +344,47 @@ mod interface_contract_tests {
         assert_eq!(super::LogFormat::from_value(""), super::LogFormat::Json);
         assert_eq!(super::LogFormat::from_value("json"), super::LogFormat::Json);
         assert_eq!(super::LogFormat::from_value("yaml"), super::LogFormat::Json);
+    }
+
+    /// The env precedence chain: FIDUCIA_LOG_FORMAT beats OTEL_LOG_FORMAT
+    /// beats the legacy LOG_FORMAT, and with none set the fleet default is
+    /// JSON. Driven through an injected getter (no process-global env
+    /// mutation), like the resource_attributes tests.
+    #[test]
+    fn log_format_env_precedence_is_fiducia_then_otel_then_legacy() {
+        use std::collections::HashMap;
+        let from = |env: &[(&str, &str)]| {
+            let map: HashMap<String, String> = env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            super::LogFormat::from_env_with(|name| map.get(name).cloned())
+        };
+
+        assert_eq!(
+            from(&[
+                ("FIDUCIA_LOG_FORMAT", "text"),
+                ("OTEL_LOG_FORMAT", "json"),
+                ("LOG_FORMAT", "json"),
+            ]),
+            super::LogFormat::Text,
+            "the fleet-specific variable must win over both fallbacks"
+        );
+        assert_eq!(
+            from(&[("OTEL_LOG_FORMAT", "text"), ("LOG_FORMAT", "json")]),
+            super::LogFormat::Text,
+            "OTEL_LOG_FORMAT must win over the legacy variable"
+        );
+        assert_eq!(
+            from(&[("LOG_FORMAT", "text")]),
+            super::LogFormat::Text,
+            "the legacy variable still applies when nothing else is set"
+        );
+        assert_eq!(
+            from(&[]),
+            super::LogFormat::Json,
+            "no variable set falls back to the JSON fleet default"
+        );
     }
 
     #[test]
@@ -577,6 +625,58 @@ mod init_smoke_tests {
         assert!(
             probe["target"].as_str().is_some(),
             "structured metadata (target) must be present: {probe}"
+        );
+    }
+
+    /// FIDUCIA_LOG_FORMAT=text must switch init() to the human-readable
+    /// layer: the startup line on stdout is NOT a JSON object (so the
+    /// filelog/JSON pipeline contract does not silently apply) while still
+    /// carrying the service name for a human reader.
+    #[test]
+    fn init_emits_human_text_lines_when_text_format_is_requested() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "init_smoke_tests::subprocess_emit_helper",
+                "--nocapture",
+            ])
+            .env("RUN_TELEMETRY_INIT_SUBPROCESS", "1")
+            .env("FIDUCIA_LOG_FORMAT", "text")
+            // Keep the compact layer's output free of ANSI escapes so the
+            // assertions below see plain text.
+            .env("NO_COLOR", "1")
+            .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .env_remove("RUST_LOG")
+            .output()
+            .expect("spawn subprocess");
+        assert!(
+            output.status.success(),
+            "subprocess failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let startup = stdout
+            .lines()
+            .find(|line| line.contains("stdout export enabled"))
+            .unwrap_or_else(|| panic!("startup line missing:\n{stdout}"));
+        assert!(
+            serde_json::from_str::<serde_json::Value>(startup).is_err(),
+            "text format must not emit a JSON startup line: {startup}"
+        );
+        assert!(
+            startup.contains("subproc-smoke"),
+            "the human-format startup line must still name the service: {startup}"
+        );
+        // The whole stream is human text: no line on stdout parses as a JSON
+        // object, so a JSON log pipeline cannot half-apply.
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| serde_json::from_str::<serde_json::Value>(line)
+                    .is_ok_and(|value| value.is_object())),
+            "text format must not emit any JSON object lines:\n{stdout}"
         );
     }
 }
