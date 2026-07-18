@@ -7,7 +7,7 @@ telemetry without per-repo boilerplate.
 ```rust
 #[tokio::main]
 async fn main() {
-    fiducia_telemetry::init("fiducia-node");   // <- the only line each service needs
+    let _telemetry = fiducia_telemetry::init("fiducia-node");
     // ...
 }
 ```
@@ -18,13 +18,16 @@ async fn main() {
   `EnvFilter` (default `info`). Set `FIDUCIA_LOG_FORMAT=text` for local
   terminal-friendly logs. `OTEL_LOG_FORMAT` and legacy `LOG_FORMAT` are
   fallbacks, in that order.
-- **When `OTEL_EXPORTER_OTLP_ENDPOINT` is set:** an OpenTelemetry **OTLP** (gRPC)
-  trace exporter, with service/deployment/Kubernetes resource attributes. Spans
-  flow to the local collector first.
+- **When `OTEL_EXPORTER_OTLP_ENDPOINT` is set:** OpenTelemetry **OTLP** (gRPC)
+  trace and metric exporters, with service/deployment/Kubernetes resource
+  attributes. The guard flushes both providers when the process exits.
+- **Built-in metric:** `fiducia.service.starts`, a low-cardinality process-start
+  counter that also proves the service-to-collector-to-Prometheus path is live.
 
 The production path is collector-first: services emit JSON stdout logs for node
-collection and send OTLP traces to a local OpenTelemetry collector. With no
-endpoint set (local dev), telemetry degrades to stdout-only logging.
+collection and send OTLP traces and metrics to a local OpenTelemetry collector.
+The gateway routes structured logs to Loki and OTLP metrics to Prometheus. With
+no endpoint set (local dev), telemetry degrades to stdout-only logging.
 
 ## Config
 
@@ -34,7 +37,7 @@ query parameters; it is never logged or exposed as a CLI flag.
 
 | Var | Required | Secret | Description |
 |-----|----------|--------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | potentially | OTLP gRPC endpoint, e.g. `http://fiducia-otel-agent:4317`; enables trace export when set. Unset = stdout-only. Never logged or accepted on argv. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | potentially | OTLP gRPC endpoint, e.g. `http://fiducia-otel-agent:4317`; enables trace and metric export when set. Unset = stdout-only. Never logged or accepted on argv. |
 | `FIDUCIA_LOG_FORMAT` | no | no | Log output format: `json` (default) or `text` / `plain` / `pretty` / `compact`. |
 | `OTEL_LOG_FORMAT` | no | no | Fallback log format used when `FIDUCIA_LOG_FORMAT` is unset. |
 | `LOG_FORMAT` | no | no | Legacy fallback used only when both telemetry-specific log-format variables are unset. |
@@ -87,21 +90,20 @@ crates scanned). Endpoint values and exporter error text are not logged, and
 sensitive resource-attribute keys are rejected before export. Dependency bumps
 are kept within semver to avoid breaking the shared `init()` contract.
 
-## Roadmap
+## Signal routing
 
-Traces and JSON logs ship today. Next, behind the same `init`: explicit app
-metrics — the deployed otel-agent Collector (`fiducia-infra/base/observability`)
-already runs a live OTLP metrics pipeline to the observability gateway, but no
-service emits OTLP metrics yet (today's metrics travel via the node-sidecar's
-Prometheus `/metrics` and lambda's hand-rolled endpoint). Also: high-value
-structured events the gateway can store without ingesting every raw log line.
+The shared initializer emits traces and metrics over OTLP. Existing service
+metrics exposed through the node-sidecar Prometheus endpoint remain supported;
+the collector merges those scraped metrics with OTLP metrics before forwarding.
+JSON application logs are intentionally written to stdout, where the collector's
+file-log receiver parses and enriches them before the gateway sends them to Loki.
 
 ## Used as a dependency
 
 Pinned **git** dependency (so a telemetry change is a deliberate version bump):
 
 ```toml
-fiducia-telemetry = { git = "https://github.com/fiducia-cloud/fiducia-telemetry.rs", tag = "v0.1.0" }
+fiducia-telemetry = { git = "https://github.com/fiducia-cloud/fiducia-telemetry.rs", tag = "v0.2.0" }
 ```
 
 ## Consumers

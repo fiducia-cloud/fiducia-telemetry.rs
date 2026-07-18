@@ -3,9 +3,10 @@
 //! One call — [`init`] — wires up `tracing` for the whole process:
 //!   * always: JSON structured logs to stdout with `RUST_LOG`/`EnvFilter`
 //!     filtering (`FIDUCIA_LOG_FORMAT=text` for local human-readable logs);
-//!   * when `OTEL_EXPORTER_OTLP_ENDPOINT` is set: an OpenTelemetry **OTLP** trace
-//!     exporter (gRPC) so spans flow to a collector / Tempo, tagged with
-//!     service and deployment resource attributes.
+//!   * when `OTEL_EXPORTER_OTLP_ENDPOINT` is set: OpenTelemetry **OTLP** trace
+//!     and metric exporters (gRPC), tagged with service and deployment resource
+//!     attributes. The collector can route metrics to Prometheus and traces to
+//!     its configured tracing backend;
 //!
 //! Services normally export OTLP to a local OpenTelemetry collector. With no
 //! endpoint configured (local dev), telemetry degrades to stdout-only logging.
@@ -16,15 +17,16 @@
 //! ```no_run
 //! #[tokio::main]
 //! async fn main() {
-//!     fiducia_telemetry::init("fiducia-node");
+//!     let _telemetry = fiducia_telemetry::init("fiducia-node");
 //!     // ...
 //! }
 //! ```
 
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::KeyValue;
+use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
+    metrics::{PeriodicReader, SdkMeterProvider},
     runtime,
     trace::{Tracer, TracerProvider},
     Resource,
@@ -34,67 +36,155 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-/// Initialize tracing + (optional) OTLP export for `service_name`.
-///
-/// Idempotent-ish: call exactly once per process, early in `main`.
-pub fn init(service_name: &str) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let log_format = LogFormat::from_env();
+const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-    match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-        Ok(endpoint) if !endpoint.is_empty() => {
-            // A misconfigured endpoint must NOT crash the service: on any
-            // exporter build failure, fall back to stdout logging and carry on.
-            match opentelemetry_otlp::SpanExporter::builder()
-                .with_tonic()
-                .with_endpoint(&endpoint)
-                // A wedged collector must stall exports, not the process; the
-                // batch worker drops batches that exceed this deadline.
-                .with_timeout(std::time::Duration::from_secs(10))
-                .build()
-            {
-                Ok(exporter) => {
-                    let provider = TracerProvider::builder()
-                        .with_batch_exporter(exporter, runtime::Tokio)
-                        .with_resource(resource(service_name))
-                        .build();
-                    let tracer = provider.tracer("fiducia");
-                    opentelemetry::global::set_tracer_provider(provider);
-                    install_otlp_subscriber(filter, log_format, tracer);
-                    tracing::info!(
-                        service.name = service_name,
-                        log.format = log_format.as_str(),
-                        "telemetry: OTLP export enabled"
-                    );
-                }
-                Err(_) => {
-                    install_stdout_subscriber(filter, log_format);
-                    // Exporter errors can echo a credential-bearing endpoint;
-                    // keep the startup failure useful without logging its text.
-                    tracing::error!("telemetry: OTLP exporter init failed; using stdout only");
-                }
-            }
+/// Owns the OpenTelemetry providers so final trace and metric batches can be
+/// flushed when the service exits.
+#[must_use = "keep the telemetry guard alive for the lifetime of the service"]
+pub struct TelemetryGuard {
+    tracer_provider: Option<TracerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
+}
+
+impl TelemetryGuard {
+    /// Whether at least one OTLP signal exporter initialized successfully.
+    pub fn otlp_enabled(&self) -> bool {
+        self.tracer_provider.is_some() || self.meter_provider.is_some()
+    }
+}
+
+impl Drop for TelemetryGuard {
+    fn drop(&mut self) {
+        let tracer_provider = self.tracer_provider.take();
+        let meter_provider = self.meter_provider.take();
+        if tracer_provider.is_none() && meter_provider.is_none() {
+            return;
         }
-        _ => {
-            install_stdout_subscriber(filter, log_format);
-            tracing::info!(
-                service.name = service_name,
-                log.format = log_format.as_str(),
-                "telemetry: stdout export enabled"
-            );
+
+        if std::thread::spawn(move || {
+            if let Some(provider) = meter_provider {
+                let _ = provider.shutdown();
+            }
+            if let Some(provider) = tracer_provider {
+                let _ = provider.shutdown();
+            }
+        })
+        .join()
+        .is_err()
+        {
+            eprintln!("telemetry: shutdown flush panicked; final batches may be incomplete");
         }
     }
 }
 
-/// Flush + shut down the tracer provider. Call before exit if you want a clean
-/// final flush (long-running servers can skip it — batches flush periodically).
+/// Initialize structured logs plus optional OTLP trace and metric export for
+/// `service_name`.
+///
+/// Keep the returned guard alive for the process lifetime. Services normally
+/// send OTLP to the local collector; the gateway routes logs to Loki and
+/// metrics to Prometheus-compatible storage.
+pub fn init(service_name: &str) -> TelemetryGuard {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let log_format = LogFormat::from_env();
+    let resource = resource(service_name);
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    let (tracer_provider, tracer) = endpoint
+        .as_deref()
+        .and_then(|endpoint| build_tracer_provider(endpoint, resource.clone()).ok())
+        .map_or((None, None), |(provider, tracer)| {
+            global::set_tracer_provider(provider.clone());
+            (Some(provider), Some(tracer))
+        });
+    let meter_provider = endpoint
+        .as_deref()
+        .and_then(|endpoint| build_meter_provider(endpoint, resource).ok());
+    if let Some(provider) = meter_provider.as_ref() {
+        global::set_meter_provider(provider.clone());
+    }
+
+    match tracer {
+        Some(tracer) => install_otlp_subscriber(filter, log_format, tracer),
+        None => install_stdout_subscriber(filter, log_format),
+    }
+    record_service_start(service_name);
+
+    tracing::info!(
+        service.name = service_name,
+        log.format = log_format.as_str(),
+        log.pipeline = "stdout-json-to-collector-to-loki",
+        otel.trace_exporter = tracer_provider.is_some(),
+        otel.metric_exporter = meter_provider.is_some(),
+        metric.pipeline = "otlp-to-collector-to-prometheus",
+        "telemetry initialized"
+    );
+    if endpoint.is_some() && (tracer_provider.is_none() || meter_provider.is_none()) {
+        // Exporter errors can echo a credential-bearing endpoint, so retain the
+        // useful signal without logging the error or endpoint text.
+        tracing::error!("one or more OTLP exporters failed to initialize");
+    }
+
+    TelemetryGuard {
+        tracer_provider,
+        meter_provider,
+    }
+}
+
+fn build_tracer_provider(
+    endpoint: &str,
+    resource: Resource,
+) -> Result<(TracerProvider, Tracer), ()> {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .with_timeout(EXPORT_TIMEOUT)
+        .build()
+        .map_err(|_| ())?;
+    let provider = TracerProvider::builder()
+        .with_batch_exporter(exporter, runtime::Tokio)
+        .with_resource(resource)
+        .build();
+    let tracer = provider.tracer("fiducia");
+    Ok((provider, tracer))
+}
+
+fn build_meter_provider(endpoint: &str, resource: Resource) -> Result<SdkMeterProvider, ()> {
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .with_timeout(EXPORT_TIMEOUT)
+        .build()
+        .map_err(|_| ())?;
+    let reader = PeriodicReader::builder(exporter, runtime::Tokio).build();
+    Ok(SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(resource)
+        .build())
+}
+
+fn record_service_start(service_name: &str) {
+    let starts = global::meter("fiducia-telemetry")
+        .u64_counter("fiducia.service.starts")
+        .with_description("Number of Fiducia service process starts")
+        .with_unit("{start}")
+        .build();
+    starts.add(
+        1,
+        &[KeyValue::new("service.name", service_name.to_string())],
+    );
+}
+
+/// Legacy trace-only global flush. New services should keep the guard returned
+/// by [`init`] alive and let it flush both traces and metrics on drop.
 ///
 /// The underlying flush blocks; running it on a dedicated thread keeps this
 /// safe to call from any context, including a current-thread Tokio runtime
 /// (where blocking in-place would deadlock the batch worker).
 pub fn shutdown() {
     let done = std::thread::spawn(|| {
-        opentelemetry::global::shutdown_tracer_provider();
+        global::shutdown_tracer_provider();
     })
     .join();
     if done.is_err() {
@@ -474,7 +564,7 @@ mod resource_assembly_tests {
         super::resource_attributes("test-service", |name| map.get(name).cloned())
     }
 
-    fn value_of<'a>(attrs: &'a [KeyValue], key: &str) -> Option<String> {
+    fn value_of(attrs: &[KeyValue], key: &str) -> Option<String> {
         let key = Key::new(key.to_string());
         attrs
             .iter()
@@ -566,7 +656,7 @@ mod init_smoke_tests {
         if std::env::var("RUN_TELEMETRY_INIT_SUBPROCESS").as_deref() != Ok("1") {
             return;
         }
-        super::init("subproc-smoke");
+        let _telemetry = super::init("subproc-smoke");
         tracing::info!(probe = "init-smoke", "hello from the subprocess");
     }
 
@@ -608,7 +698,7 @@ mod init_smoke_tests {
             .find(|event| {
                 event["message"]
                     .as_str()
-                    .is_some_and(|message| message.contains("stdout export enabled"))
+                    .is_some_and(|message| message.contains("telemetry initialized"))
             })
             .unwrap_or_else(|| panic!("startup line missing:\n{stdout}"));
         assert_eq!(
@@ -659,7 +749,7 @@ mod init_smoke_tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let startup = stdout
             .lines()
-            .find(|line| line.contains("stdout export enabled"))
+            .find(|line| line.contains("telemetry initialized"))
             .unwrap_or_else(|| panic!("startup line missing:\n{stdout}"));
         assert!(
             serde_json::from_str::<serde_json::Value>(startup).is_err(),
