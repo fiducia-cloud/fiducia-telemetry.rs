@@ -67,9 +67,10 @@ execs the given command.
 
 ## Reproducible CI/test image
 
-This crate consumes generated contracts from the sibling `fiducia-interfaces`
-repository. CI and the test Dockerfile pin it to commit
-`487e470c45ab5851e8f6f3b1dc048fe067fbf408` instead of a moving branch. The
+This crate consumes generated contracts directly from the `fiducia-interfaces`
+Git workspace, pinned in `Cargo.toml` to commit
+`e3dba39566e036ad61de91e2e6c1d625ec2b5411` instead of a moving branch. CI and
+the test Dockerfile also pin their checkout instead of a moving branch. The
 Docker build checks that commit out detached and verifies that the resulting
 full `HEAD` equals `INTERFACES_SHA`; a branch, tag, or abbreviated hash fails
 closed. Both the image build and its default test command require the committed
@@ -103,7 +104,7 @@ file-log receiver parses and enriches them before the gateway sends them to Loki
 Pinned **git** dependency (so a telemetry change is a deliberate version bump):
 
 ```toml
-fiducia-telemetry = { git = "https://github.com/fiducia-cloud/fiducia-telemetry.rs", tag = "v0.2.0" }
+fiducia-telemetry = { git = "https://github.com/fiducia-cloud/fiducia-telemetry.rs", tag = "v0.2.1" }
 ```
 
 ## Consumers

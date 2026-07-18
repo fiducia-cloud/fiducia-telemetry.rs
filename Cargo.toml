@@ -1,7 +1,7 @@
 # Crate manifest: package metadata and dependencies for the fiducia-telemetry library.
 [package]
 name = "fiducia-telemetry"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Shared OpenTelemetry + tracing setup for every fiducia.cloud Rust service — one init() call, OTLP export, fmt fallback."
 
@@ -12,7 +12,7 @@ tracing-opentelemetry = "0.28"
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["metrics", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "metrics", "trace"] }
-fiducia-interfaces = { path = "../fiducia-interfaces/generated/rust" }
+fiducia-interfaces = { git = "https://github.com/fiducia-cloud/fiducia-interfaces", rev = "e3dba39566e036ad61de91e2e6c1d625ec2b5411" }
 
 [dev-dependencies]
 serde_json = "1"
