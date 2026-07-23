@@ -22,13 +22,13 @@
 //! }
 //! ```
 
+use opentelemetry::trace::noop::NoopTracerProvider;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     metrics::{PeriodicReader, SdkMeterProvider},
-    runtime,
-    trace::{Tracer, TracerProvider},
+    trace::{SdkTracerProvider, Tracer},
     Resource,
 };
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -42,7 +42,7 @@ const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// flushed when the service exits.
 #[must_use = "keep the telemetry guard alive for the lifetime of the service"]
 pub struct TelemetryGuard {
-    tracer_provider: Option<TracerProvider>,
+    tracer_provider: Option<SdkTracerProvider>,
     meter_provider: Option<SdkMeterProvider>,
 }
 
@@ -135,15 +135,15 @@ pub fn init(service_name: &str) -> TelemetryGuard {
 fn build_tracer_provider(
     endpoint: &str,
     resource: Resource,
-) -> Result<(TracerProvider, Tracer), ()> {
+) -> Result<(SdkTracerProvider, Tracer), ()> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .with_timeout(EXPORT_TIMEOUT)
         .build()
         .map_err(|_| ())?;
-    let provider = TracerProvider::builder()
-        .with_batch_exporter(exporter, runtime::Tokio)
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build();
     let tracer = provider.tracer("fiducia");
@@ -157,7 +157,7 @@ fn build_meter_provider(endpoint: &str, resource: Resource) -> Result<SdkMeterPr
         .with_timeout(EXPORT_TIMEOUT)
         .build()
         .map_err(|_| ())?;
-    let reader = PeriodicReader::builder(exporter, runtime::Tokio).build();
+    let reader = PeriodicReader::builder(exporter).build();
     Ok(SdkMeterProvider::builder()
         .with_reader(reader)
         .with_resource(resource)
@@ -176,20 +176,13 @@ fn record_service_start(service_name: &str) {
     );
 }
 
-/// Legacy trace-only global flush. New services should keep the guard returned
-/// by [`init`] alive and let it flush both traces and metrics on drop.
-///
-/// The underlying flush blocks; running it on a dedicated thread keeps this
-/// safe to call from any context, including a current-thread Tokio runtime
-/// (where blocking in-place would deadlock the batch worker).
+/// Legacy global-provider reset. New services must keep the guard returned by
+/// [`init`] alive and let it flush traces and metrics on drop. OpenTelemetry
+/// 0.32 no longer exposes a type-erased global shutdown operation, so this
+/// compatibility hook prevents new spans after legacy callers finish while
+/// the owned guard remains the authoritative flush path.
 pub fn shutdown() {
-    let done = std::thread::spawn(|| {
-        global::shutdown_tracer_provider();
-    })
-    .join();
-    if done.is_err() {
-        eprintln!("telemetry: shutdown flush panicked; spans may be dropped");
-    }
+    global::set_tracer_provider(NoopTracerProvider::new());
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,9 +226,11 @@ impl LogFormat {
 }
 
 fn resource(service_name: &str) -> Resource {
-    Resource::new(resource_attributes(service_name, |name| {
-        std::env::var(name).ok()
-    }))
+    Resource::builder_empty()
+        .with_attributes(resource_attributes(service_name, |name| {
+            std::env::var(name).ok()
+        }))
+        .build()
 }
 
 /// The full resource-attribute assembly, with the environment injected so the
