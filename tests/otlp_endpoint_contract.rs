@@ -26,11 +26,7 @@ fn child_init_helper() {
 fn whitespace_only_otlp_endpoint_falls_back_to_stdout_without_exporters() {
     let executable = std::env::current_exe().expect("integration-test executable");
     let output = Command::new(executable)
-        .args([
-            "--exact",
-            "child_init_helper",
-            "--nocapture",
-        ])
+        .args(["--exact", "child_init_helper", "--nocapture"])
         .env(CHILD_MARKER, "1")
         .env("OTEL_EXPORTER_OTLP_ENDPOINT", " \t\n ")
         .env("FIDUCIA_LOG_FORMAT", "json")
