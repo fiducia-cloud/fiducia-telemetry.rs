@@ -1,0 +1,24 @@
+[package]
+org = "fiducia-cloud"
+name = "fiducia-telemetry"
+version = "0.2.1"
+description = "Shared OpenTelemetry and tracing initialization for Fiducia Rust services"
+license = "UNLICENSED"
+keywords = ["telemetry", "opentelemetry", "tracing", "otlp", "rust"]
+language = "rust"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/fiducia-cloud/fiducia-telemetry.rs"
+
+[publish]
+include_readme = true
+tag_format = "v{version}"
+smoke_test = "cargo test --manifest-path \"$ZED_PKG_TEST_TARGET/Cargo.toml\" --locked"
+exclude = [".env", ".env.*", ".direnv/**", ".zed/**", ".zed-pack/**", ".vendor/.zed/**", "target/**", "tmp/**", "**/*.log", ".DS_Store"]
+
+[install]
+adapter = "rust"
+
+[scripts]
+test = "cargo test --all-targets --locked"
