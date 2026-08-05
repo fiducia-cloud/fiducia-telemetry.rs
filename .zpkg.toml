@@ -1,5 +1,5 @@
 [package]
-org = "fiducia"
+org = "fiducia-cloud"
 name = "fiducia-telemetry"
 version = "0.2.1"
 description = "Shared OpenTelemetry and tracing initialization for Fiducia Rust services"
@@ -15,7 +15,7 @@ url = "https://github.com/fiducia-cloud/fiducia-telemetry.rs"
 include_readme = true
 tag_format = "v{version}"
 smoke_test = "cargo test --manifest-path \"$ZED_PKG_TEST_TARGET/Cargo.toml\" --locked"
-exclude = [".env", ".env.*", ".direnv/**", ".zed/**", ".zed-pack/**", "target/**", "tmp/**", "**/*.log", ".DS_Store"]
+exclude = [".env", ".env.*", ".direnv/**", ".zed/**", ".zed-pack/**", ".vendor/.zed/**", "target/**", "tmp/**", "**/*.log", ".DS_Store"]
 
 [install]
 adapter = "rust"
