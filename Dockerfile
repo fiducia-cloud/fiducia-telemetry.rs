@@ -19,4 +19,18 @@ RUN git init fiducia-interfaces \
 COPY --chown=10001:10001 . fiducia-telemetry.rs
 WORKDIR /build/fiducia-telemetry.rs
 RUN cargo test --locked
+
+# --- sops: decrypt at `docker run`, never at `docker build` ------------------
+# The image carries only CIPHERTEXT (env/enc/<SOPS_ENV>.env.enc) and the sops
+# binary. The age key arrives at run time (SOPS_AGE_KEY / SOPS_AGE_KEY_FILE);
+# scripts/sops-entrypoint.sh decrypts into the process environment and execs
+# the real command, so no plaintext ever lands in a layer or on disk.
+# See env/README.md.
+ARG SOPS_ENV=local
+COPY --chmod=0755 --from=ghcr.io/getsops/sops:v3.10.2-alpine /usr/local/bin/sops /usr/local/bin/sops
+COPY --chmod=0755 scripts/sops-entrypoint.sh /usr/local/bin/sops-entrypoint.sh
+COPY --chmod=0644 env/enc/${SOPS_ENV}.env.enc /app/secrets/app.env
+ENV SOPS_SECRETS_FILE=/app/secrets/app.env
+
+ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh"]
 CMD ["cargo", "test", "--locked"]
