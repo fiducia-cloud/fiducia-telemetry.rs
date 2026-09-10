@@ -1,0 +1,117 @@
+name: ORES OTEL config contract
+
+on:
+  pull_request:
+    paths:
+      - '.ores-otel.toml'
+      - '.github/workflows/ores-otel-config-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.ores-otel.toml'
+      - '.github/workflows/ores-otel-config-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ores-otel-config-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact Fiducia candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out public OTel runtime and authority mirror
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ores-otel/ores.otel.log
+          ref: 0109ec4972864d666174f759d87239c8385ba496
+          path: .contract/ores-otel-log
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify read-only mirror provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          provenance='.contract/ores-otel-log/contracts/public/ores-otel-config.v1/PROVENANCE.md'
+          test -s "$provenance"
+          grep -Fq 'b544872d13323de7be19a9d5879c419149679f7a' "$provenance"
+          grep -Fq 'This public mirror is not a third authority' "$provenance"
+          grep -Fq 'typespec-json-schema-validator' "$provenance"
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: .contract/ores-otel-log/package-lock.json
+
+      - name: Build pinned OTel config runtime without lifecycle scripts
+        working-directory: .contract/ores-otel-log
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install tsc -p tsconfig.build.json
+
+      - name: Parse and semantically resolve repository OTel config
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .contract/instances/OresOtelConfigV1/valid
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import {
+            parseOresOtelToml,
+            resolveOresOtelConfig,
+          } from './.contract/ores-otel-log/dist/ores-otel-config.js';
+
+          const raw = await readFile('.ores-otel.toml', 'utf8');
+          const parsed = parseOresOtelToml(raw);
+          const resolved = resolveOresOtelConfig(parsed, { role: 'server', env: {} });
+
+          if (parsed.server === undefined) {
+            throw new Error('Fiducia telemetry config must retain an explicit server projection');
+          }
+          if (resolved.role !== 'server') {
+            throw new Error(`expected server role, got ${resolved.role}`);
+          }
+
+          await writeFile(
+            '.contract/instances/OresOtelConfigV1/valid/repository.json',
+            `${JSON.stringify(parsed, null, 2)}\n`,
+            'utf8',
+          );
+          NODE
+
+      - name: Enforce both authored authorities with TJSV
+        uses: ORESoftware/typespec-json-schema-validator@4a5d049218adc2740d4cf78f612caf7f38f6f64c
+        with:
+          typespec: .contract/ores-otel-log/contracts/public/ores-otel-config.v1/main.tsp
+          schema: .contract/ores-otel-log/contracts/public/ores-otel-config.v1/authored.schema.json
+          instances: .contract/instances
+          report: .contract/tjsv-evidence/report.json
+          contract_ir: .contract/tjsv-evidence/contract-ir.json
+          output_dir: .contract/tjsv-evidence/generated
+          quiet: 'false'
+
+      - name: Retain deterministic contract evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: fiducia-otel-config-tjsv-${{ github.sha }}
+          path: .contract/tjsv-evidence/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
