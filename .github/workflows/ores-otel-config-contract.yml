@@ -1,0 +1,62 @@
+name: ORES OTEL config contract
+
+on:
+  pull_request:
+    paths:
+      - '.ores-otel.toml'
+      - '.github/workflows/ores-otel-config-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.ores-otel.toml'
+      - '.github/workflows/ores-otel-config-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ores-otel-config-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact consumer head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check out merged telemetry contract authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ores-otel/ores-otel-interfaces
+          ref: b544872253ee0527329fa80caee17d171baa6524
+          path: .contract/ores-otel-interfaces
+          persist-credentials: false
+
+      - name: Parse TOML into the cross-runtime contract object
+        run: |
+          mkdir -p .contract/instances/OresOtelConfigV1/valid
+          python3 - <<'PY'
+          import json
+          import tomllib
+          from pathlib import Path
+          with Path('.ores-otel.toml').open('rb') as f:
+              value = tomllib.load(f)
+          out = Path('.contract/instances/OresOtelConfigV1/valid/repository.json')
+          out.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+
+      - name: Enforce both authored authorities with TJSV
+        uses: ORESoftware/typespec-json-schema-validator@4a5d049218adc2740d4cf78f612caf7f38f6f64c
+        with:
+          typespec: .contract/ores-otel-interfaces/contracts/ores-otel-config.v1/main.tsp
+          schema: .contract/ores-otel-interfaces/contracts/ores-otel-config.v1/authored.schema.json
+          instances: .contract/instances
+          report: .contract/tjsv-report.json
+          contract_ir: .contract/tjsv-contract-ir.json
+          output_dir: .contract/generated
+          quiet: 'false'
