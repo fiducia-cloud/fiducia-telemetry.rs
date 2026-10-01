@@ -96,7 +96,7 @@ jobs:
           NODE
 
       - name: Enforce both authored authorities with TJSV
-        uses: ORESoftware/typespec-json-schema-validator@4a5d049218adc2740d4cf78f612caf7f38f6f64c
+        uses: ORESoftware/typespec-json-schema-validator@69337efc11ba4ecaa90b48878c942384fc74f650
         with:
           typespec: .contract/ores-otel-log/contracts/public/ores-otel-config.v1/main.tsp
           schema: .contract/ores-otel-log/contracts/public/ores-otel-config.v1/authored.schema.json
