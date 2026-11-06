@@ -112,7 +112,9 @@ fn generic_format_controls_fallback_when_fleet_setting_is_absent() {
     assert!(text.contains("telemetry initialized"));
     assert!(text.contains("emitted after telemetry startup"));
     assert!(
-        !text.lines().any(|line| line.contains("\"message\":\"telemetry initialized\"")),
+        !text
+            .lines()
+            .any(|line| line.contains("\"message\":\"telemetry initialized\"")),
         "the explicit OTEL text setting must not be overridden by legacy JSON"
     );
 }
