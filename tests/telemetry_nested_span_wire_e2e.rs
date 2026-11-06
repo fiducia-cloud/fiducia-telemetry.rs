@@ -82,9 +82,19 @@ fn nested_span_event_keeps_both_ancestry_entries_and_current_child() {
 #[test]
 fn warn_filter_suppresses_parent_info_but_preserves_nested_warning_and_error() {
     let values = records(&child_run("warn"));
-    assert!(values.iter().all(|event| event["message"] != "parent-probe-20261105"));
-    assert!(values.iter().any(|event| event["message"] == "child-probe-20261105"));
-    assert!(values.iter().any(|event| event["message"] == "parent-after-child-20261105"));
-    assert!(values.iter().all(|event| event["otel.trace_exporter"] != true));
-    assert!(values.iter().all(|event| event["otel.metric_exporter"] != true));
+    assert!(values
+        .iter()
+        .all(|event| event["message"] != "parent-probe-20261105"));
+    assert!(values
+        .iter()
+        .any(|event| event["message"] == "child-probe-20261105"));
+    assert!(values
+        .iter()
+        .any(|event| event["message"] == "parent-after-child-20261105"));
+    assert!(values
+        .iter()
+        .all(|event| event["otel.trace_exporter"] != true));
+    assert!(values
+        .iter()
+        .all(|event| event["otel.metric_exporter"] != true));
 }
