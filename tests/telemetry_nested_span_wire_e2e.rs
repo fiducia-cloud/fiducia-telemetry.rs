@@ -99,20 +99,28 @@ fn warn_filter_suppresses_parent_info_but_preserves_nested_warning_and_error() {
         .all(|event| event["otel.metric_exporter"] != true));
 }
 
-
 // Wave50: run each assertion against a fresh real telemetry process.
 #[test]
 fn wave50_error_filter_retains_error_and_drops_both_lower_severities() {
     let values = records(&child_run("error"));
-    assert!(values.iter().any(|v| v["message"] == "parent-after-child-20261105"));
-    assert!(values.iter().all(|v| v["message"] != "child-probe-20261105"));
-    assert!(values.iter().all(|v| v["message"] != "parent-probe-20261105"));
+    assert!(values
+        .iter()
+        .any(|v| v["message"] == "parent-after-child-20261105"));
+    assert!(values
+        .iter()
+        .all(|v| v["message"] != "child-probe-20261105"));
+    assert!(values
+        .iter()
+        .all(|v| v["message"] != "parent-probe-20261105"));
 }
 
 #[test]
 fn wave50_off_filter_emits_no_application_or_initialization_records() {
     let values = records(&child_run("off"));
-    assert!(values.is_empty(), "off should filter the whole subscriber: {values:?}");
+    assert!(
+        values.is_empty(),
+        "off should filter the whole subscriber: {values:?}"
+    );
 }
 
 #[test]
@@ -141,14 +149,20 @@ fn wave50_warn_filter_does_not_emit_dropped_parent_scope_event() {
         .filter_map(|v| v["message"].as_str())
         .filter(|m| m.ends_with("-20261105"))
         .collect();
-    assert_eq!(probes, ["child-probe-20261105", "parent-after-child-20261105"]);
+    assert_eq!(
+        probes,
+        ["child-probe-20261105", "parent-after-child-20261105"]
+    );
 }
 
 #[test]
 fn wave50_subprocess_json_lines_remain_parseable_without_ansi_control_codes() {
     let out = child_run("trace");
     let values = records(&out);
-    assert!(values.len() >= 3, "expected actual structured probe records");
+    assert!(
+        values.len() >= 3,
+        "expected actual structured probe records"
+    );
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         if line.starts_with('{') {
             assert!(
